@@ -1,0 +1,91 @@
+name: Casso Reader – build Windows
+
+on:
+  workflow_dispatch: # chỉ chạy khi bấm Run workflow
+
+permissions:
+  contents: read
+
+env:
+  PDFIUM_RELEASE: "chromium%2F8100"
+  PDFIUM_SHA256: "ae913f407e8d3f5cdbf08a9869564d647b13e132e01eb376c0a5a33b7a227a45" # resources/pdfium/README.md
+  ELECTRON_BUILDER_VERSION: "26.0.12"
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: PDFium (kiểm đúng SHA-256 đang dùng)
+        run: |
+          mkdir -p resources/pdfium/win32-x64 /tmp/pdfium
+          curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/$PDFIUM_RELEASE/pdfium-win-x64.tgz" | tar -xz -C /tmp/pdfium
+          cp /tmp/pdfium/bin/pdfium.dll resources/pdfium/win32-x64/
+          echo "$PDFIUM_SHA256  resources/pdfium/win32-x64/pdfium.dll" | sha256sum -c -
+
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Đóng gói (.exe cài đặt + bản portable)
+        run: |
+          cat > electron-builder.ci.yml <<'EOF'
+          appId: vn.casso.reader
+          productName: Casso Reader
+          directories:
+            output: dist
+          files:
+            - out/**
+            - package.json
+          asarUnpack:
+            - "**/node_modules/koffi/**"
+          extraResources:
+            - from: resources/pdfium/win32-x64
+              to: pdfium/win32-x64
+            - from: resources/agent-fonts
+              to: agent-fonts
+            - from: resources/icon.png
+              to: icon.png
+          win:
+            icon: resources/icon.ico
+            target:
+              - target: nsis
+                arch: [x64]
+              - target: portable
+                arch: [x64]
+          nsis:
+            oneClick: false
+            perMachine: false
+            allowToChangeInstallationDirectory: true
+            createDesktopShortcut: true
+            createStartMenuShortcut: true
+            artifactName: "Casso-Reader-Setup-${version}.exe"
+          portable:
+            artifactName: "Casso-Reader-${version}-portable.exe"
+          EOF
+          npx --yes "electron-builder@$ELECTRON_BUILDER_VERSION" --win --config electron-builder.ci.yml --publish never
+
+      - name: Smoke test
+        run: |
+          ls -lh dist/*.exe
+          test -f dist/win-unpacked/resources/pdfium/win32-x64/pdfium.dll
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: casso-reader-windows
+          path: dist/*.exe
+          retention-days: 14
